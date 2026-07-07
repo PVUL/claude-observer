@@ -15,10 +15,11 @@ fn spark(vals: &[f64]) -> String {
 }
 
 fn shade(v: f64, max: f64) -> char {
-    if max <= 0.0 || v <= 0.0 {
-        '·'
+    const B: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if max <= 0.0 {
+        '▁'
     } else {
-        ['·', '░', '▒', '▓', '█'][((v / max) * 4.0).round().clamp(0.0, 4.0) as usize]
+        B[((v / max) * 7.0).round().clamp(0.0, 7.0) as usize]
     }
 }
 
@@ -62,7 +63,7 @@ fn weekly(a: &Analysis) -> (String, String, f64) {
     let nums: Vec<String> = a
         .weeks
         .iter()
-        .map(|w| if w.used >= 99.5 { format!("{:.0}⚑", w.used) } else { format!("{:.0}", w.used) })
+        .map(|w| if w.used >= 99.5 { format!("{:.0}%⚑", w.used) } else { format!("{:.0}%", w.used) })
         .collect();
     let sp = spark(&a.weeks.iter().map(|w| w.used).collect::<Vec<_>>());
     let avg = if a.weeks.is_empty() {
@@ -88,7 +89,7 @@ fn heatmap_lines(a: &Analysis) -> Vec<String> {
         let cells: String = (0..8).map(|bk| format!("{:<4}", shade(a.heat[i][bk], a.heat_max))).collect();
         b.push(format!("  {}   {}", d, cells));
     }
-    b.push("  idle ·░▒▓█ busy".to_string());
+    b.push("  low ▁▂▃▄▅▆▇█ high".to_string());
     b
 }
 
@@ -128,13 +129,13 @@ pub fn trends(a: &Analysis) -> Vec<String> {
     b.push(String::new());
 
     b.push("DAY-OF-WEEK  (avg daily activity)".into());
-    let dnums: String = DAYS.iter().enumerate().map(|(i, d)| format!("{}{:.0} ", &d[..1], a.dow[i])).collect();
+    let dnums: String = DAYS.iter().enumerate().map(|(i, d)| format!("{}{:.0}% ", &d[..1], a.dow[i])).collect();
     b.push(format!("  {}   {}", dnums.trim_end(), spark(&a.dow)));
     b.push(format!("  weekday {:.0}%  ·  weekend {:.0}%", a.weekday_avg, a.weekend_avg));
     b.push(String::new());
 
     b.push("MONTHLY  (avg weekly used)".into());
-    let mnums: String = a.months.iter().map(|(l, v)| format!("{l} {v:.0}   ")).collect();
+    let mnums: String = a.months.iter().map(|(l, v)| format!("{l} {v:.0}%   ")).collect();
     let msp = spark(&a.months.iter().map(|(_, v)| *v).collect::<Vec<_>>());
     b.push(format!("  {}  {}", mnums.trim_end(), msp));
     b.push(String::new());
