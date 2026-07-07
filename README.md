@@ -52,19 +52,22 @@ _May fold into claude-switcher later; kept separate for now._
 
 ## Install
 
-Rust (cargo) + a C compiler (for the bundled SQLite). Build a release binary:
+Rust (cargo) + a C compiler (for the bundled SQLite). One command builds it and puts
+`claude-observer` on your `PATH`:
 
 ```sh
-cargo build --release
-# binary at ./target/release/claude-observer
+cargo install --path .   # compiles release + installs to ~/.cargo/bin
 ```
 
-On the nix box (no global toolchain): prefix with a nix shell —
-`nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build --release`.
+That's it — `claude-observer` is now runnable from anywhere (assuming `~/.cargo/bin` is
+on your `PATH`, which rustup sets up by default; if a shell already open says "command
+not found", run `rehash`). Re-run the same command to upgrade after pulling.
 
-To run it as just `claude-observer`, put it on your `PATH` — either
-`cargo install --path .` (installs to `~/.cargo/bin`) or copy the binary to
-`~/.local/bin`. Otherwise call it by its full path (`./target/release/claude-observer …`).
+On the nix box (no global toolchain): prefix with a nix shell —
+`nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo install --path .`.
+
+For a dev build without installing, use `cargo build --release` and call the binary by
+its path (`./target/release/claude-observer …`).
 
 Will be packaged into pi-server (like claude-switcher) once past v0.1.
 
