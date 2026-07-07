@@ -24,7 +24,7 @@ fn intensity(t: DateTime<Utc>) -> f64 {
     // Local-ish rhythm: busy weekday afternoons, quiet mornings + weekends.
     let l = t.with_timezone(&chrono::Local);
     let weekend = l.weekday().num_days_from_monday() >= 5;
-    let base = if weekend { 0.30 } else { 0.85 };
+    let base = if weekend { 0.18 } else { 0.85 };
     let hour = l.hour() as f64 + l.minute() as f64 / 60.0;
     let tod = (-((hour - 14.0) / 5.0).powi(2)).exp(); // gaussian peak ~2pm
     base * (0.20 + 0.80 * tod)
@@ -43,7 +43,7 @@ pub fn run(store: &mut Store, account: &str, days: i64, reset: bool) -> Result<(
     let mut rows: Vec<(String, String, String, f64, String)> = Vec::new();
     let mut t = start;
     while t <= now {
-        let noise = ((t.timestamp() as f64) * 0.7).sin() * 4.0;
+        let noise = ((t.timestamp() as f64) * 0.7).sin() * 1.5;
 
         // 7-day window: linear ramp toward that week's peak.
         let r7 = next_boundary(t, week);

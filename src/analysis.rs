@@ -2,7 +2,7 @@
 //! weekly used/free, day-of-week rhythm, weekday vs weekend, monthly trend, burn series.
 
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike, Utc};
 use std::collections::BTreeMap;
 
 use crate::store::Store;
@@ -29,6 +29,10 @@ pub struct Analysis {
     pub weekend_avg: f64,
     /// (month label, avg weekly used) oldest→newest.
     pub months: Vec<(String, f64)>,
+    /// Avg consumption *rate* by weekday(Mon..Sun) x 3-hour bucket(0..8) — the
+    /// "when do you actually burn tokens" heatmap. Normalized against `heat_max`.
+    pub heat: [[f64; 8]; 7],
+    pub heat_max: f64,
 }
 
 fn pace(used: f64, remaining_min: i64) -> Option<f64> {
@@ -134,6 +138,34 @@ pub fn build(store: &Store, account: &str, plan: &str, weeks_n: usize) -> Result
     let weekday_avg = avg(0, 5);
     let weekend_avg = avg(5, 7);
 
+    // Heatmap: consumption rate = positive delta in 5-hour utilization between
+    // consecutive samples of the *same* window (a reset drop is skipped), attributed
+    // to the later sample's weekday + 3-hour bucket. Averaged per interval.
+    let mut hsum = [[0.0f64; 8]; 7];
+    let mut hcnt = [[0u32; 8]; 7];
+    for w in five.windows(2) {
+        let (p, c) = (&w[0], &w[1]);
+        if p.resets_at != c.resets_at || c.resets_at.is_none() {
+            continue;
+        }
+        let d = (c.utilization - p.utilization).max(0.0);
+        let l = c.taken_at.with_timezone(&Local);
+        let wd = l.weekday().num_days_from_monday() as usize;
+        let bk = (l.hour() / 3) as usize;
+        hsum[wd][bk] += d;
+        hcnt[wd][bk] += 1;
+    }
+    let mut heat = [[0.0f64; 8]; 7];
+    let mut heat_max = 0.0f64;
+    for wd in 0..7 {
+        for bk in 0..8 {
+            if hcnt[wd][bk] > 0 {
+                heat[wd][bk] = hsum[wd][bk] / hcnt[wd][bk] as f64;
+                heat_max = heat_max.max(heat[wd][bk]);
+            }
+        }
+    }
+
     Ok(Analysis {
         account: account.to_string(),
         plan: plan.to_string(),
@@ -146,5 +178,7 @@ pub fn build(store: &Store, account: &str, plan: &str, weeks_n: usize) -> Result
         weekday_avg,
         weekend_avg,
         months,
+        heat,
+        heat_max,
     })
 }
