@@ -50,8 +50,56 @@ Data source: `claude-switcher usage --json`.
 
 _May fold into claude-switcher later; kept separate for now._
 
-## Build
+## Install
 
-Rust. `cargo build` (needs a C compiler for the bundled SQLite). On this box:
-`nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build`.
+Rust (cargo) + a C compiler (for the bundled SQLite). Build a release binary:
+
+```sh
+cargo build --release
+# binary at ./target/release/claude-observer
+```
+
+On the nix box (no global toolchain): prefix with a nix shell —
+`nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build --release`.
+
+To run it as just `claude-observer`, put it on your `PATH` — either
+`cargo install --path .` (installs to `~/.cargo/bin`) or copy the binary to
+`~/.local/bin`. Otherwise call it by its full path (`./target/release/claude-observer …`).
+
 Will be packaged into pi-server (like claude-switcher) once past v0.1.
+
+## Quickstart
+
+No real data yet? Seed dummy samples and look at the screens — this path needs
+**nothing external**:
+
+```sh
+claude-observer seed --account paul-nhost --reset   # ~35 days of fake samples
+claude-observer preview                             # render Overview + Trends
+claude-observer report                              # plain-text summary
+```
+
+(Running with no subcommand is the same as `preview`.)
+
+For **real** data you need [claude-switcher](https://github.com/PVUL/claude-switcher)
+on your `PATH` — `snapshot` shells out to `claude-switcher usage --json` to read your
+accounts. Then:
+
+```sh
+claude-observer snapshot                            # record one sample (run on a timer)
+claude-observer history paul-nhost --window seven_day
+claude-observer preview
+```
+
+Run `snapshot` on a schedule (systemd timer / cron / launchd) so a real time-series
+accumulates — that's the tool's heartbeat; everything else just analyzes what it collects.
+
+### Config
+
+- **Data store** — SQLite at `$XDG_DATA_HOME/claude-observer/observer.db` (else
+  `~/.local/share/claude-observer/observer.db`). Override with `--db <path>` or
+  `CLAUDE_OBSERVER_DB`.
+- **claude-switcher binary** — defaults to `claude-switcher` (found on `PATH`).
+  Override with `--switcher <path>` or `CLAUDE_OBSERVER_SWITCHER`.
+
+Run `claude-observer --help` (or `<cmd> --help`) for all flags.
