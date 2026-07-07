@@ -1,10 +1,16 @@
 # claude-observer
 
-Monitor Claude account usage — the **5-hour** and **weekly** rolling windows — so no
-allotment goes to waste. Shows how much of each window you've used, when it resets, and
-your **pace** (are you on track to use ~100% before the reset, under-utilizing, or about
-to hit the limit early?). Plays nice with [claude-switcher](https://github.com/PVUL/claude-switcher);
-it can also stand alone.
+The **usage-metrics / long-term-patterns** layer for Claude accounts. claude-observer
+continuously records the 5-hour and weekly window utilization and turns that time-series
+into **trends and patterns** — how much of each 7-day allotment you actually use vs. leave
+on the table, when your windows are typically under-utilized, burn-rate over time, per-
+account comparison.
+
+**Scope, deliberately narrow:** this is *not* a live dashboard.
+[claude-switcher](https://github.com/PVUL/claude-switcher)'s TUI already nails the
+point-in-time view; claude-observer is the separate **history + analytics** tool that
+sits alongside it (may merge later). It reuses claude-switcher's `usage --json` as its
+data feed.
 
 ## Why
 
@@ -15,30 +21,34 @@ over time, helps **plan work** to fill under-utilized capacity.
 
 ## Status — v0.1 (built)
 
-- **`claude-observer status`** — per-account dashboard: 5h / 7d (and 7d-Opus) bars,
-  % used / left, reset countdown, and a **pace projection** with a verdict
-  (under-utilizing / on pace / over pace).
-- **`claude-observer status --json`** — machine-readable, for the pi extension & scripts.
-- **`claude-observer snapshot`** — record a sample into a local SQLite trend store
-  (`$XDG_DATA_HOME/claude-observer/observer.db`). Meant to run on a timer.
-- **`claude-observer history <account> [--window five_hour|seven_day]`** — recent samples.
+The collection + inspection primitives are in place:
 
-Data source: `claude-switcher usage --json` (reuses its account auth). A standalone mode
-that queries the Anthropic usage endpoint directly is on the roadmap.
+- **`claude-observer snapshot`** — record current window utilization into a local SQLite
+  time-series (`$XDG_DATA_HOME/claude-observer/observer.db`). Runs on a timer — this is
+  the tool's heartbeat; everything else analyzes what it collects.
+- **`claude-observer history <account> [--window five_hour|seven_day]`** — raw samples.
+- **`claude-observer status [--json]`** — a quick current read (bars, % used/left, reset
+  countdown, pace projection). Kept lightweight/scriptable — NOT a live TUI (that's
+  claude-switcher's job); mainly a spot-check and the `--json` feed.
 
-## Roadmap
+Data source: `claude-switcher usage --json`.
 
-1. **Interactive TUI** (`ratatui`) — live dashboard: per-account windows, pace, and a
-   trend sparkline from the snapshot store.
-2. **pi extension** — ask pi "how much of my allotment have I used?" and get the 5h/7d
-   picture + pace, in-session. (TS package, modeled on `pi-claude-switcher`.)
-3. **Snapshot timer** — periodic `snapshot` (systemd) to build real trend history.
-4. **Warmer** (opt-in, scheduled) — send minimal dummy tokens to trigger the 5-hour
-   window early, so a big session starts against a fresh/aligned window. Never automatic.
-5. **Per-ask token tracking** — attribute token spend (from session transcripts:
+## Roadmap — long-term metrics, not a live view
+
+1. **Snapshot collector** — periodic `snapshot` (systemd timer on the box) so a real
+   time-series accumulates. Prerequisite for everything below.
+2. **Reports / analytics** (`claude-observer report`) — the actual product: weekly
+   allotment used vs. wasted, utilization by day-of-week / time-of-day, 5-hour
+   under-utilization patterns, burn-rate trends, per-account comparison.
+3. **pi extension** — ask pi for the *patterns* ("how much did I leave unused last week?",
+   "when am I typically idle?"), surfaced from the history — not a live gauge.
+4. **Per-ask token tracking** — attribute token spend (from session transcripts:
    input/output/cache per turn) to ask types, to learn typical cost by complexity.
-6. **Work queue** — when a window is under-utilized, pick queued tasks to run that fit the
-   remaining budget before reset, sized by the learned per-ask estimates.
+5. **Warmer** (opt-in, scheduled) — trigger the 5-hour window early before a big session.
+6. **Work queue** — fill under-utilized windows with queued tasks sized by learned
+   estimates.
+
+_May fold into claude-switcher later; kept separate for now._
 
 ## Build
 
