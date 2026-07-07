@@ -20,6 +20,7 @@ pub struct Window {
 
 /// One Claude account as reported by claude-switcher.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // email/plan/active/available parsed for completeness; not all displayed yet
 pub struct Account {
     pub name: String,
     pub email: Option<String>,

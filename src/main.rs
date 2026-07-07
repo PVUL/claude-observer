@@ -1,26 +1,26 @@
-//! claude-observer — monitor Claude account usage windows, pace, and trends.
+//! claude-observer — the usage-metrics / long-term-patterns tool for Claude accounts.
 //!
-//! v0.1: reads `claude-switcher usage --json`, renders a status dashboard with a
-//! *pace* projection (are you under- or over-utilizing each window before it resets?),
-//! records snapshots to a local SQLite trend store, and prints history. The interactive
-//! TUI and the pi extension build on this core (see README roadmap).
+//! Collects window-utilization snapshots (via `claude-switcher usage --json`) into a
+//! local SQLite time-series and turns them into patterns: weekly used/free, day-of-week
+//! rhythm, weekday vs weekend, monthly trend, burn. Not a live gauge — that's
+//! claude-switcher's TUI. See README.
 
+mod analysis;
+mod seed;
 mod store;
 mod usage;
+mod view;
 
 use anyhow::Result;
-use chrono::{Duration, Local, Utc};
+use chrono::Local;
 use clap::{Parser, Subcommand};
-use serde::Serialize;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "claude-observer", version, about = "Monitor Claude account usage: windows, pace, trends.")]
+#[command(name = "claude-observer", version, about = "Claude usage metrics & long-term patterns.")]
 struct Cli {
-    /// claude-switcher binary (the usage data source).
     #[arg(long, default_value = "claude-switcher", env = "CLAUDE_OBSERVER_SWITCHER")]
     switcher: String,
-    /// SQLite trend store (default: $XDG_DATA_HOME/claude-observer/observer.db).
     #[arg(long, env = "CLAUDE_OBSERVER_DB")]
     db: Option<PathBuf>,
     #[command(subcommand)]
@@ -29,154 +29,43 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show current usage for all accounts (default).
-    Status {
-        /// Machine-readable JSON (for the pi extension / scripting).
-        #[arg(long)]
-        json: bool,
-    },
-    /// Record a usage snapshot into the trend store (run me on a timer).
+    /// Record a usage snapshot into the trend store (run on a timer).
     Snapshot,
-    /// Print recent snapshot history for an account + window.
+    /// Raw recent samples for an account + window.
     History {
         account: String,
-        #[arg(long, default_value = "five_hour")]
+        #[arg(long, default_value = "seven_day")]
         window: String,
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-}
-
-fn window_hours(key: &str) -> f64 {
-    if key == "five_hour" {
-        5.0
-    } else {
-        168.0 // 7 days
-    }
-}
-
-fn bar(pct: f64, width: usize) -> String {
-    let filled = ((pct / 100.0) * width as f64).round().clamp(0.0, width as f64) as usize;
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
-}
-
-fn humanize(d: Duration) -> String {
-    let mins = d.num_minutes().max(0);
-    let (days, h, m) = (mins / 1440, (mins % 1440) / 60, mins % 60);
-    if days > 0 {
-        format!("{days}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m}m")
-    } else {
-        format!("{m}m")
-    }
-}
-
-/// Project end-of-window utilization if the current rate holds, and a verdict.
-fn pace(util: f64, key: &str, remaining: Duration) -> (Option<f64>, &'static str) {
-    let len = window_hours(key);
-    let rem_h = remaining.num_minutes().max(0) as f64 / 60.0;
-    let elapsed = len - rem_h;
-    if elapsed < 0.15 {
-        return (None, "just reset");
-    }
-    let projected = util * (len / elapsed);
-    let verdict = if projected < 85.0 {
-        "under-utilizing — room to spare"
-    } else if projected <= 108.0 {
-        "on pace to use it fully"
-    } else {
-        "over pace — you'll hit the limit early"
-    };
-    (Some(projected), verdict)
-}
-
-#[derive(Serialize)]
-struct WinOut {
-    window: String,
-    utilization: f64,
-    remaining_pct: f64,
-    resets_at: String,
-    resets_in_minutes: i64,
-    projected_pct: Option<f64>,
-    verdict: String,
-}
-
-#[derive(Serialize)]
-struct AcctOut {
-    account: String,
-    email: Option<String>,
-    plan: Option<String>,
-    active: bool,
-    available: bool,
-    windows: Vec<WinOut>,
-}
-
-fn status(switcher: &str, json: bool) -> Result<()> {
-    let accounts = usage::fetch(switcher)?;
-    let now = Utc::now();
-
-    if json {
-        let out: Vec<AcctOut> = accounts
-            .iter()
-            .map(|a| AcctOut {
-                account: a.name.clone(),
-                email: a.email.clone(),
-                plan: a.plan.clone(),
-                active: a.active,
-                available: a.available,
-                windows: a
-                    .windows()
-                    .into_iter()
-                    .map(|(key, _label, w)| {
-                        let remaining = w.resets_at - now;
-                        let (projected, verdict) = pace(w.utilization, key, remaining);
-                        WinOut {
-                            window: key.to_string(),
-                            utilization: w.utilization,
-                            remaining_pct: (100.0 - w.utilization).max(0.0),
-                            resets_at: w.resets_at.to_rfc3339(),
-                            resets_in_minutes: remaining.num_minutes().max(0),
-                            projected_pct: projected,
-                            verdict: verdict.to_string(),
-                        }
-                    })
-                    .collect(),
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
-
-    for a in &accounts {
-        let marker = if a.active { "*" } else { " " };
-        let email = a.email.clone().unwrap_or_default();
-        let plan = a.plan.clone().unwrap_or_default();
-        println!("{marker} {} ({email} · {plan})", a.name);
-        let windows = a.windows();
-        if windows.is_empty() {
-            println!("      usage: unavailable (not signed in, token expired, or offline)");
-            continue;
-        }
-        for (key, label, w) in windows {
-            let remaining = w.resets_at - now;
-            let local = w.resets_at.with_timezone(&Local).format("%a %-I:%M%p");
-            println!(
-                "      {label}  [{}]  {:>3.0}% used · {:>3.0}% left · resets in {} ({})",
-                bar(w.utilization, 20),
-                w.utilization,
-                (100.0 - w.utilization).max(0.0),
-                humanize(remaining),
-                local
-            );
-            let (projected, verdict) = pace(w.utilization, key, remaining);
-            match projected {
-                Some(p) => println!("              pace: ~{p:.0}% projected by reset — {verdict}"),
-                None => println!("              pace: {verdict}"),
-            }
-        }
-    }
-    Ok(())
+    /// Render the pattern screens as text (for review; the same rows the TUI shows).
+    Preview {
+        #[arg(long, default_value = "both")]
+        screen: String,
+        #[arg(long, default_value = "paul-nhost")]
+        account: String,
+        #[arg(long, default_value = "Team")]
+        plan: String,
+    },
+    /// Plain-text patterns summary (for the pi extension / scripts).
+    Report {
+        #[arg(long, default_value = "paul-nhost")]
+        account: String,
+        #[arg(long, default_value = "Team")]
+        plan: String,
+        #[arg(long, default_value_t = 8)]
+        weeks: usize,
+    },
+    /// Seed dummy data so the screens can be previewed before real collection.
+    Seed {
+        #[arg(long, default_value = "paul-nhost")]
+        account: String,
+        #[arg(long, default_value_t = 35)]
+        days: i64,
+        #[arg(long)]
+        reset: bool,
+    },
 }
 
 fn snapshot(switcher: &str, db: PathBuf) -> Result<()> {
@@ -191,13 +80,49 @@ fn history(db: PathBuf, account: &str, window: &str, limit: usize) -> Result<()>
     let s = store::Store::open(&db)?;
     let rows = s.history(account, window, limit)?;
     if rows.is_empty() {
-        println!("no snapshots yet for {account}/{window} — run `claude-observer snapshot` first");
+        println!("no samples for {account}/{window} yet — run `snapshot` or `seed`");
         return Ok(());
     }
     println!("{account} · {window} (newest first):");
     for r in rows {
-        let when = r.taken_at.with_timezone(&Local).format("%m-%d %H:%M");
-        println!("  {when}   {:>5.1}%", r.utilization);
+        println!("  {}   {:>5.1}%", r.taken_at.with_timezone(&Local).format("%m-%d %H:%M"), r.utilization);
+    }
+    Ok(())
+}
+
+fn preview(db: PathBuf, screen: &str, account: &str, plan: &str) -> Result<()> {
+    let s = store::Store::open(&db)?;
+    let a = analysis::build(&s, account, plan, 8)?;
+    match screen {
+        "overview" => println!("{}", view::render(&a, "overview")),
+        "trends" => println!("{}", view::render(&a, "trends")),
+        _ => {
+            println!("{}", view::render(&a, "overview"));
+            println!();
+            println!("{}", view::render(&a, "trends"));
+        }
+    }
+    Ok(())
+}
+
+fn report(db: PathBuf, account: &str, plan: &str, weeks: usize) -> Result<()> {
+    let s = store::Store::open(&db)?;
+    let a = analysis::build(&s, account, plan, weeks)?;
+    let avg = if a.weeks.is_empty() {
+        0.0
+    } else {
+        a.weeks.iter().map(|w| w.used).sum::<f64>() / a.weeks.len() as f64
+    };
+    println!("{} ({}) · last {} weeks", a.account, a.plan, a.weeks.len());
+    println!("  weekly: avg {:.0}% used, ~{:.0}% free", avg, (100.0 - avg).max(0.0));
+    if let Some(u) = a.current_used {
+        let p = a.current_pace.map(|p| format!("~{:.0}%", p)).unwrap_or_else(|| "—".into());
+        println!("  this week: {:.0}% used, pace {}", u, p);
+    }
+    println!("  rhythm: weekday {:.0}% · weekend {:.0}% (avg daily activity)", a.weekday_avg, a.weekend_avg);
+    if !a.months.is_empty() {
+        let m: Vec<String> = a.months.iter().map(|(l, v)| format!("{l} {v:.0}%")).collect();
+        println!("  monthly: {}", m.join(" · "));
     }
     Ok(())
 }
@@ -205,9 +130,18 @@ fn history(db: PathBuf, account: &str, window: &str, limit: usize) -> Result<()>
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db = cli.db.clone().unwrap_or_else(store::default_path);
-    match cli.cmd.unwrap_or(Cmd::Status { json: false }) {
-        Cmd::Status { json } => status(&cli.switcher, json),
+    match cli.cmd.unwrap_or(Cmd::Preview {
+        screen: "both".into(),
+        account: "paul-nhost".into(),
+        plan: "Team".into(),
+    }) {
         Cmd::Snapshot => snapshot(&cli.switcher, db),
         Cmd::History { account, window, limit } => history(db, &account, &window, limit),
+        Cmd::Preview { screen, account, plan } => preview(db, &screen, &account, &plan),
+        Cmd::Report { account, plan, weeks } => report(db, &account, &plan, weeks),
+        Cmd::Seed { account, days, reset } => {
+            let mut s = store::Store::open(&db)?;
+            seed::run(&mut s, &account, days, reset)
+        }
     }
 }

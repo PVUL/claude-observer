@@ -69,13 +69,28 @@ impl Store {
         Ok(n)
     }
 
-    /// Most recent `limit` samples for an account+window, newest first.
-    pub fn history(&self, account: &str, window: &str, limit: usize) -> Result<Vec<Sample>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT taken_at, utilization, resets_at FROM snapshots
-             WHERE account = ?1 AND window = ?2 ORDER BY taken_at DESC LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![account, window, limit as i64], |r| {
+    /// Delete every sample for an account (used by `seed --reset`).
+    pub fn clear(&self, account: &str) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM snapshots WHERE account = ?1", params![account])?)
+    }
+
+    /// Bulk insert (taken_at, account, window, utilization, resets_at) in one transaction.
+    pub fn insert_many(&mut self, rows: &[(String, String, String, f64, String)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for (t, a, w, u, r) in rows {
+            tx.execute(
+                "INSERT INTO snapshots (taken_at, account, window, utilization, resets_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![t, a, w, u, r],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn query(&self, sql: &str, account: &str, window: &str, limit: i64) -> Result<Vec<Sample>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![account, window, limit], |r| {
             let taken: String = r.get(0)?;
             let util: f64 = r.get(1)?;
             let resets: Option<String> = r.get(2)?;
@@ -95,5 +110,23 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    /// Most recent `limit` samples for an account+window, newest first.
+    pub fn history(&self, account: &str, window: &str, limit: usize) -> Result<Vec<Sample>> {
+        self.query(
+            "SELECT taken_at, utilization, resets_at FROM snapshots
+             WHERE account = ?1 AND window = ?2 ORDER BY taken_at DESC LIMIT ?3",
+            account, window, limit as i64,
+        )
+    }
+
+    /// All samples for an account+window, oldest first (for analysis).
+    pub fn samples(&self, account: &str, window: &str) -> Result<Vec<Sample>> {
+        self.query(
+            "SELECT taken_at, utilization, resets_at FROM snapshots
+             WHERE account = ?1 AND window = ?2 ORDER BY taken_at ASC LIMIT ?3",
+            account, window, -1,
+        )
     }
 }
