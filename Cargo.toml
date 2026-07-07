@@ -1,0 +1,19 @@
+[package]
+name = "claude-observer"
+version = "0.1.0"
+edition = "2021"
+description = "Monitor Claude account usage: 5-hour and weekly windows, pace/trends, and token spend per account. Plays nice with claude-switcher; works standalone."
+license = "MIT"
+repository = "https://github.com/PVUL/claude-observer"
+
+[[bin]]
+name = "claude-observer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
