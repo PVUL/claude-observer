@@ -758,24 +758,26 @@ fn week_x_labels(start: NaiveDate, today: NaiveDate) -> Vec<Line<'static>> {
     labels
 }
 
-/// Append a filled box (dense bar points) spanning `[x0, x1]` at height `y`, so a
-/// `GraphType::Bar` dataset renders a bar of real width rather than a 1-column spike.
-fn push_box(dst: &mut Vec<(f64, f64)>, x0: f64, x1: f64, y: f64) {
-    const N: usize = 48;
-    for i in 0..=N {
-        dst.push((x0 + (x1 - x0) * (i as f64 / N as f64), y));
+/// Append a *floating* filled rectangle `[x0,x1]×[y0,y1]` as a dense point grid, for a
+/// Scatter dataset (Braille) — a bar that doesn't have to start at the 0 baseline. The
+/// grid density scales with how much of the axes (`xspan`/`yspan`) the box covers, so it
+/// stays solid whether the box is a thin sliver or a big block.
+fn push_rect(dst: &mut Vec<(f64, f64)>, x0: f64, x1: f64, y0: f64, y1: f64, xspan: f64, yspan: f64) {
+    let nx = (((x1 - x0).abs() / xspan) * 300.0).clamp(6.0, 200.0) as usize;
+    let ny = (((y1 - y0).abs() / yspan) * 180.0).clamp(4.0, 160.0) as usize;
+    for i in 0..=nx {
+        let x = x0 + (x1 - x0) * i as f64 / nx as f64;
+        for j in 0..=ny {
+            dst.push((x, y0 + (y1 - y0) * j as f64 / ny as f64));
+        }
     }
 }
 
-/// Fractional-day x where a session window starts within the shown week.
-fn window_x_start(w: &FiveWindow, start: NaiveDate) -> f64 {
-    (w.start.date_naive() - start).num_days() as f64
-        + w.start.time().num_seconds_from_midnight() as f64 / 86400.0
-}
-
-/// The week view: one floating bar per 5-hour session, taller = more used that window
-/// (full height = fully exhausted, a short floor = idle). The cursor day's sessions are
-/// highlighted; a selected session (↑/↓) is brightest; future days are greyed.
+/// The week view: a burn-up drawn as floating bars — one per 5-hour session, stacked so
+/// each bar spans that period's slice of the cumulative (bottom = running total before,
+/// top = after). The tops trace the burn-up toward 100%; thick bars = heavy sessions,
+/// thin = light. The cursor day's bars are highlighted, a selected session (↑/↓) is
+/// brightest, future days are greyed.
 fn draw_burnup(
     f: &mut Frame,
     area: Rect,
@@ -826,14 +828,26 @@ fn draw_burnup(
 
     // Session-window bars, split by highlight: selected session, the cursor day's other
     // sessions, and the rest of the week.
-    // Each session is a box the width of its 5 hours (≈5/24 of a day), grouped by
-    // highlight: the rest of the week, the cursor day's sessions, the selected session.
+    // Running cumulative (the burn-up curve) at hourly resolution.
+    let wh = a.week_alloc_hours(start);
+    let mut cum = vec![0.0f64; wh.len() + 1];
+    for i in 0..wh.len() {
+        cum[i + 1] = cum[i] + wh[i];
+    }
+    let cum_at = |hour: usize| cum[hour.min(wh.len())];
+
+    // Each session is a floating box: x = its 5 hours (small gap so bars read discretely),
+    // y = [cumulative before, cumulative after]. Idle sessions get a thin visible slab.
     let day_date = start + Duration::days(cursor as i64);
     let (mut rest, mut day, mut chosen) = (Vec::new(), Vec::new(), Vec::new());
     for &wi in widxs {
         let w = &a.five_windows[wi];
-        let x0 = window_x_start(w, start);
-        let x1 = (x0 + 5.0 / 24.0).min(7.0);
+        let hs = ((w.start.date_naive() - start).num_days() * 24 + w.start.hour() as i64)
+            .clamp(0, wh.len() as i64) as usize;
+        let he = (hs + 5).min(wh.len());
+        let (y0, y1) = (cum_at(hs), cum_at(he).max(cum_at(hs) + MIN_BAR));
+        let (x0, x1) = (hs as f64 / 24.0, he as f64 / 24.0);
+        let gap = (x1 - x0) * 0.12;
         let dst = if Some(wi) == sel {
             &mut chosen
         } else if w.start.date_naive() == day_date {
@@ -841,13 +855,13 @@ fn draw_burnup(
         } else {
             &mut rest
         };
-        push_box(dst, x0.max(0.0), x1, w.peak.max(MIN_BAR));
+        push_rect(dst, x0 + gap, x1 - gap, y0, y1, 7.0, 100.0);
     }
 
     let datasets = vec![
-        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::DarkGray)).data(&rest),
-        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(ACCENT)).data(&day),
-        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)).data(&chosen),
+        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Scatter).style(Style::default().fg(Color::DarkGray)).data(&rest),
+        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Scatter).style(Style::default().fg(ACCENT)).data(&day),
+        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Scatter).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)).data(&chosen),
     ];
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -890,8 +904,8 @@ fn draw_block_breakdown(f: &mut Frame, area: Rect, w: &FiveWindow) {
     draw_y_axis_right(f, cols[1], "100%", "50%", "0%");
 }
 
-/// Day zoom: that day's 5-hour session windows as bars (full height = exhausted) with
-/// the day's cumulative burn-up line for context, over a 24-hour x-axis.
+/// Day zoom: the day's burn-up as floating bars — one per 5-hour session, stacked up the
+/// day's cumulative, over a 24-hour x-axis (y scaled to the day's own total).
 fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
     let d = a.day_view(date);
     let rows = Layout::default()
@@ -918,8 +932,15 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
         rows[1],
     );
 
-    // Every 5-hour session overlapping this day, as a box the width of its hours (clipped
-    // to 0..24). Includes the currently-active window even if it started before midnight.
+    // Cumulative within the day (the day's burn-up), hourly.
+    let dh = a.day_alloc(date);
+    let mut cum = [0.0f64; 25];
+    for h in 0..24 {
+        cum[h + 1] = cum[h] + dh[h];
+    }
+    let ymax = cum[24].max(2.0 * MIN_BAR);
+
+    // Each session overlapping the day as a floating box, stacked up the cumulative.
     let hour_of = |t: DateTime<Local>| {
         (t.date_naive() - date).num_days() as f64 * 24.0
             + t.time().num_seconds_from_midnight() as f64 / 3600.0
@@ -927,13 +948,18 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
     let mut bars = Vec::new();
     for w in &a.five_windows {
         let (sh, eh) = (hour_of(w.start), hour_of(w.end));
-        if eh > 0.0 && sh < 24.0 {
-            push_box(&mut bars, sh.max(0.0), eh.min(24.0), w.peak.max(MIN_BAR));
+        if eh <= 0.0 || sh >= 24.0 {
+            continue;
         }
+        let hs = sh.max(0.0).floor() as usize;
+        let he = (eh.min(24.0).ceil() as usize).min(24);
+        let (y0, y1) = (cum[hs], cum[he].max(cum[hs] + MIN_BAR));
+        let gap = (he - hs) as f64 * 0.12;
+        push_rect(&mut bars, hs as f64 + gap, he as f64 - gap, y0, y1, 24.0, ymax);
     }
     let datasets = vec![Dataset::default()
-        .marker(Marker::Block)
-        .graph_type(GraphType::Bar)
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Scatter)
         .style(Style::default().fg(ACCENT))
         .data(&bars)];
     let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].iter().map(|s| Line::from(*s)).collect();
@@ -943,9 +969,9 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
         .split(rows[2]);
     let chart = Chart::new(datasets)
         .x_axis(Axis::default().style(dim()).bounds([0.0, 24.0]).labels(x_labels))
-        .y_axis(Axis::default().style(dim()).bounds([0.0, 100.0]).labels(Vec::<Line>::new()));
+        .y_axis(Axis::default().style(dim()).bounds([0.0, ymax]).labels(Vec::<Line>::new()));
     f.render_widget(chart, cols[0]);
-    draw_y_axis_right(f, cols[1], "100%", "50%", "0%");
+    draw_y_axis_right(f, cols[1], &format!("{ymax:.0}%"), &format!("{:.0}%", ymax / 2.0), "0%");
 }
 
 fn draw_trends(f: &mut Frame, area: Rect, a: &Analysis) {

@@ -98,6 +98,22 @@ impl Analysis {
     pub fn week_view(&self, start: NaiveDate) -> Vec<DayView> {
         (0..7).map(|i| self.day_view(start + Duration::days(i))).collect()
     }
+
+    /// Weekly-allotment % consumed per hour of one day (0..24).
+    pub fn day_alloc(&self, date: NaiveDate) -> [f64; 24] {
+        self.day_alloc_hours.get(&date).copied().unwrap_or([0.0; 24]).map(|v| v.max(0.0))
+    }
+
+    /// Weekly-allotment % consumed per hour across the week (168 values, Sun 00:00 →
+    /// Sat 24:00). Prefix-summing this gives the burn-up curve.
+    pub fn week_alloc_hours(&self, start: NaiveDate) -> Vec<f64> {
+        let mut v = Vec::with_capacity(24 * 7);
+        for d in 0..7 {
+            let hrs = self.day_alloc_hours.get(&(start + Duration::days(d))).copied().unwrap_or([0.0; 24]);
+            v.extend(hrs.iter().map(|h| h.max(0.0)));
+        }
+        v
+    }
 }
 
 fn pace(used: f64, remaining_min: i64) -> Option<f64> {

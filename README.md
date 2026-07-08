@@ -23,10 +23,11 @@ over time, helps **plan work** to fill under-utilized capacity.
 
 The collection + inspection primitives are in place:
 
-- **`claude-observer`** (no subcommand) — the interactive TUI. The **Week** view is the
-  week's **5-hour session windows as floating bars** — taller = more of that window used
-  (full height = fully exhausted; a short floor = idle). The % scale is on the right;
-  future days in the current week are greyed. Keys:
+- **`claude-observer`** (no subcommand) — the interactive TUI. The **Week** view is a
+  **burn-up drawn as floating bars** — one per 5-hour session, stacked so each bar spans
+  that period's slice of the running total (bottom = cumulative before, top = after). The
+  tops trace the burn-up toward 100%; thick bars = heavy sessions, thin = light. The %
+  scale is on the right; future days in the current week are greyed. Keys:
   - `←`/`→` — select the day (at the edges, scroll to the previous/next week; never the
     future).
   - `↑`/`↓` — cycle the 5-hour session blocks; the selected one is highlighted.
