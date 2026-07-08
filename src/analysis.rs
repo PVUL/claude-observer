@@ -25,9 +25,7 @@ pub struct FiveWindow {
 /// One calendar day, assembled for display.
 pub struct DayView {
     pub date: NaiveDate,
-    /// Weekly-allotment % consumed per hour of the day (0..24) — backs the burn-up line.
-    pub alloc_hours: [f64; 24],
-    /// Weekly-allotment % consumed per 6-hour block (derived from `alloc_hours`).
+    /// Weekly-allotment % consumed per 6-hour block.
     pub blocks: [f64; 4],
     /// Total weekly-allotment % consumed that day (sum of `alloc_hours`).
     pub total: f64,
@@ -87,9 +85,8 @@ impl Analysis {
         }
         DayView {
             date,
-            alloc_hours,
             blocks,
-            total: alloc_hours.iter().sum(),
+            total: blocks.iter().sum(),
             hours: self.day_hours.get(&date).copied().unwrap_or([0.0; 24]),
             peak_5h: self.peak_5h.get(&date).copied().unwrap_or(0.0),
             is_today: date == self.today_date,

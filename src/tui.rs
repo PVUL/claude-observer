@@ -31,23 +31,23 @@ const ACCENT: Color = Color::Cyan;
 /// How the week panel is drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum WeekViz {
-    /// A burn-up line — cumulative allotment used across the week, toward 100%.
-    Line,
+    /// Floating bars — one per 5-hour session, taller = more used that window.
+    Sessions,
     /// A calendar of per-day 6-hour-block bars.
-    Bars,
+    Calendar,
 }
 
 impl WeekViz {
     fn toggle(self) -> WeekViz {
         match self {
-            WeekViz::Line => WeekViz::Bars,
-            WeekViz::Bars => WeekViz::Line,
+            WeekViz::Sessions => WeekViz::Calendar,
+            WeekViz::Calendar => WeekViz::Sessions,
         }
     }
     fn label(self) -> &'static str {
         match self {
-            WeekViz::Line => "line",
-            WeekViz::Bars => "bars",
+            WeekViz::Sessions => "sessions",
+            WeekViz::Calendar => "calendar",
         }
     }
 }
@@ -125,7 +125,7 @@ impl App {
             day_cursor: 0,
             block_cursor: None,
             detail: false,
-            viz: WeekViz::Line,
+            viz: WeekViz::Sessions,
             demo: false,
             demo_store: None,
             status: None,
@@ -499,13 +499,13 @@ fn draw_panel(f: &mut Frame, area: Rect, app: &App) {
                 // Zoomed: a selected session's breakdown wins over the day zoom.
                 (_, true) => match sel_window {
                     Some(wi) => draw_block_breakdown(f, inner, &a.five_windows[wi]),
-                    None if app.viz == WeekViz::Bars => draw_day_detail(f, inner, &a.day_view(date)),
+                    None if app.viz == WeekViz::Calendar => draw_day_detail(f, inner, &a.day_view(date)),
                     None => draw_day_burnup(f, inner, a, date),
                 },
-                (WeekViz::Line, false) => {
+                (WeekViz::Sessions, false) => {
                     draw_burnup(f, inner, a, start, app.day_cursor, &app.week_window_idxs(), sel_window)
                 }
-                (WeekViz::Bars, false) => draw_week(f, inner, a, start, app.day_cursor),
+                (WeekViz::Calendar, false) => draw_week(f, inner, a, start, app.day_cursor),
             }
         }
     }
@@ -719,36 +719,24 @@ fn draw_hours(f: &mut Frame, area: Rect, hours: &[f64; 24]) {
 
 const WEEKDAYS_SUN: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/// Cumulative allotment burn-up across the week (hourly), from 0 at Sunday. x in days
-/// [0,7], y in % toward 100. Flat where there was no usage.
-fn week_burnup_points(week: &[DayView]) -> Vec<(f64, f64)> {
-    let mut pts = vec![(0.0, 0.0)];
-    let mut cum = 0.0;
-    for (d, day) in week.iter().enumerate() {
-        for h in 0..24 {
-            cum += day.alloc_hours[h];
-            pts.push((d as f64 + (h as f64 + 1.0) / 24.0, cum));
-        }
-    }
-    pts
-}
-
-/// Cumulative burn-up within a single day (hourly), from 0. x in hours [0,24].
-fn day_burnup_points(day: &DayView) -> Vec<(f64, f64)> {
-    let mut pts = vec![(0.0, 0.0)];
-    let mut cum = 0.0;
-    for h in 0..24 {
-        cum += day.alloc_hours[h];
-        pts.push((h as f64 + 1.0, cum));
-    }
-    pts
-}
+/// Minimum bar height (% pts) so a no-usage session still shows as a short bar, making
+/// idle stretches read as a flat floor rather than gaps.
+const MIN_BAR: f64 = 1.5;
 
 /// Even day labels for a [0,7] x-axis. ratatui edge-aligns the first/last label, so
 /// padding both ends with an empty entry leaves Sun..Sat on evenly-spaced interior ticks.
-fn week_x_labels() -> Vec<Line<'static>> {
+/// Days after `today` (future dates in the current week) are greyed.
+fn week_x_labels(start: NaiveDate, today: NaiveDate) -> Vec<Line<'static>> {
     let mut labels = vec![Line::from("")];
-    labels.extend(WEEKDAYS_SUN.iter().map(|s| Line::from(*s)));
+    for (i, name) in WEEKDAYS_SUN.iter().enumerate() {
+        let d = start + Duration::days(i as i64);
+        let style = if d > today {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+        labels.push(Line::from(Span::styled(*name, style)));
+    }
     labels.push(Line::from(""));
     labels
 }
@@ -768,9 +756,9 @@ fn window_x_start(w: &FiveWindow, start: NaiveDate) -> f64 {
         + w.start.time().num_seconds_from_midnight() as f64 / 86400.0
 }
 
-/// The burn-up view: a line rising toward 100%, with the week's 5-hour session windows
-/// overlaid as bars (full height = fully exhausted). The cursor day's line segment and
-/// bars are highlighted; a selected session (↑/↓) is brightest.
+/// The week view: one floating bar per 5-hour session, taller = more used that window
+/// (full height = fully exhausted, a short floor = idle). The cursor day's sessions are
+/// highlighted; a selected session (↑/↓) is brightest; future days are greyed.
 fn draw_burnup(
     f: &mut Frame,
     area: Rect,
@@ -785,11 +773,10 @@ fn draw_burnup(
         .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    let week = a.week_view(start);
     let end = start + Duration::days(6);
     let is_current = start == a.current_week_start();
     f.render_widget(
-        section(&format!("BURN-UP  ·  {} – {}", start.format("%b %-d"), end.format("%b %-d"))),
+        section(&format!("5-HOUR SESSIONS  ·  {} – {}", start.format("%b %-d"), end.format("%b %-d"))),
         rows[0],
     );
     // Caption: a selected session's details win; otherwise this-week / past-week status.
@@ -837,24 +824,16 @@ fn draw_burnup(
         } else {
             &mut rest
         };
-        push_box(dst, x0.max(0.0), x1, w.peak);
+        push_box(dst, x0.max(0.0), x1, w.peak.max(MIN_BAR));
     }
 
-    let all = week_burnup_points(&week);
-    let (lo, hi) = (cursor as f64, cursor as f64 + 1.0);
-    let seg: Vec<(f64, f64)> = all.iter().copied().filter(|(x, _)| *x >= lo && *x <= hi).collect();
-
     let datasets = vec![
-        // Session boxes underneath…
         Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::DarkGray)).data(&rest),
-        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::Gray)).data(&day),
+        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(ACCENT)).data(&day),
         Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)).data(&chosen),
-        // …burn-up line on top.
-        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Line).style(dim()).data(&all),
-        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Line).style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)).data(&seg),
     ];
     let chart = Chart::new(datasets)
-        .x_axis(Axis::default().style(dim()).bounds([0.0, 7.0]).labels(week_x_labels()))
+        .x_axis(Axis::default().style(dim()).bounds([0.0, 7.0]).labels(week_x_labels(start, a.today_date)))
         .y_axis(
             Axis::default()
                 .style(dim())
@@ -911,7 +890,7 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
         ""
     };
     f.render_widget(
-        section(&format!("{}{tag}  ·  sessions & burn-up", d.date.format("%A, %b %-d"))),
+        section(&format!("{}{tag}  ·  5-hour sessions", d.date.format("%A, %b %-d"))),
         rows[0],
     );
     f.render_widget(
@@ -932,14 +911,14 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
     for w in &a.five_windows {
         let (sh, eh) = (hour_of(w.start), hour_of(w.end));
         if eh > 0.0 && sh < 24.0 {
-            push_box(&mut bars, sh.max(0.0), eh.min(24.0), w.peak);
+            push_box(&mut bars, sh.max(0.0), eh.min(24.0), w.peak.max(MIN_BAR));
         }
     }
-    let pts = day_burnup_points(&d);
-    let datasets = vec![
-        Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(ACCENT)).data(&bars),
-        Dataset::default().marker(Marker::Braille).graph_type(GraphType::Line).style(Style::default().fg(Color::DarkGray)).data(&pts),
-    ];
+    let datasets = vec![Dataset::default()
+        .marker(Marker::Block)
+        .graph_type(GraphType::Bar)
+        .style(Style::default().fg(ACCENT))
+        .data(&bars)];
     let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].iter().map(|s| Line::from(*s)).collect();
     let chart = Chart::new(datasets)
         .x_axis(Axis::default().style(dim()).bounds([0.0, 24.0]).labels(x_labels))
@@ -1098,14 +1077,14 @@ mod tests {
         assert!(all.contains("claude-observer"), "header brand present");
         assert!(!all.contains("Trends"), "trends tab is parked");
         // Default view is the burn-up line, with Sun–Sat on the x-axis.
-        assert!(all.contains("BURN-UP"), "burn-up is the default week view");
+        assert!(all.contains("5-HOUR SESSIONS"), "sessions bars are the default week view");
         assert!(all.contains("Sun") && all.contains("Sat"), "x-axis spans the week");
         assert!(all.contains("paul-nhost") && all.contains("account 1 of 2"), "account shown in title");
-        assert!(all.contains("q quit"), "footer hotkeys present");
+        assert!(all.contains("enter zoom"), "footer hotkeys present");
 
         // g flips to the bar calendar.
         press(&mut app, KeyCode::Char('g'));
-        assert_eq!(app.viz, WeekViz::Bars);
+        assert_eq!(app.viz, WeekViz::Calendar);
         terminal.draw(|f| draw(f, &app)).unwrap();
         assert!(rows(&terminal).join("\n").contains("6-hour blocks"), "g shows the bar calendar");
     }
@@ -1167,7 +1146,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(90, 22)).unwrap();
         terminal.draw(|f| draw(f, &app)).unwrap();
         let all = rows(&terminal).join("\n");
-        assert!(all.contains("sessions & burn-up"), "detail zooms into the day's sessions");
+        assert!(all.contains("5-hour sessions"), "detail zooms into the day's sessions");
         assert!(all.contains("consumed") && all.contains("of allotment"), "detail shows the day's stats");
         assert!(all.contains("esc back"), "footer offers a way back");
 
@@ -1193,7 +1172,7 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).unwrap();
         let all = rows(&terminal).join("\n");
         assert!(all.contains("DEMO"), "the demo badge is shown");
-        assert!(all.contains("BURN-UP"), "the week view has data to render");
+        assert!(all.contains("5-HOUR SESSIONS"), "the week view has data to render");
 
         press(&mut app, KeyCode::Char('d'));
         assert!(!app.demo && app.accounts.is_empty(), "toggling off returns to live data");
