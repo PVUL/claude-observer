@@ -545,14 +545,31 @@ fn verdict(pace: f64) -> &'static str {
 
 const DOW: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/// A slim left-hand y-axis: the shared max at the top, 0 at the bottom (just above the
+/// A slim right-hand y-axis: the shared max at the top, 0 at the bottom (just above the
 /// chart's own label row), so bar heights have a readable scale.
 fn draw_y_axis(f: &mut Frame, area: Rect, ymax: u64) {
     let h = area.height as usize;
     let mut lines = vec![Line::from(""); h.max(1)];
-    lines[0] = Line::from(Span::styled(format!("{ymax:>3}% "), dim()));
+    lines[0] = Line::from(Span::styled(format!(" {ymax:>3}%"), dim()));
     if h >= 2 {
-        lines[h - 2] = Line::from(Span::styled("  0% ", dim()));
+        lines[h - 2] = Line::from(Span::styled("   0%", dim()));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// A right-hand y-axis for the 0-100% chart views: top label at the first row, bottom
+/// label just above the chart's x-axis rows, mid in between.
+fn draw_y_axis_right(f: &mut Frame, area: Rect, top: &str, mid: &str, bot: &str) {
+    let h = area.height as usize;
+    if h == 0 {
+        return;
+    }
+    let bottom = h.saturating_sub(3); // last plot row, above the x-axis line + labels
+    let mut lines = vec![Line::from(""); h];
+    lines[0] = Line::from(Span::styled(format!(" {top}"), dim()));
+    if bottom >= 1 {
+        lines[bottom / 2] = Line::from(Span::styled(format!(" {mid}"), dim()));
+        lines[bottom] = Line::from(Span::styled(format!(" {bot}"), dim()));
     }
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -613,9 +630,9 @@ fn draw_week_grid(f: &mut Frame, area: Rect, week: &[DayView], cursor: usize) {
     let ymax = week.iter().flat_map(|d| d.blocks).fold(0.0, f64::max).max(1.0).round() as u64;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(5), Constraint::Min(0)])
+        .constraints([Constraint::Min(0), Constraint::Length(5)])
         .split(area);
-    draw_y_axis(f, cols[0], ymax);
+    draw_y_axis(f, cols[1], ymax);
 
     let mut chart = BarChart::default().bar_width(2).bar_gap(0).group_gap(2).max(ymax);
     for (i, d) in week.iter().enumerate() {
@@ -647,7 +664,7 @@ fn draw_week_grid(f: &mut Frame, area: Rect, week: &[DayView], cursor: usize) {
                 .bars(&bars),
         );
     }
-    f.render_widget(chart, cols[1]);
+    f.render_widget(chart, cols[0]);
 }
 
 /// The day-detail view: a gauge for the day's slice of the weekly allotment, its peak
@@ -691,9 +708,9 @@ fn draw_hours(f: &mut Frame, area: Rect, hours: &[f64; 24]) {
     let ymax = hours.iter().cloned().fold(0.0, f64::max).max(1.0).round() as u64;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(5), Constraint::Min(0)])
+        .constraints([Constraint::Min(0), Constraint::Length(5)])
         .split(area);
-    draw_y_axis(f, cols[0], ymax);
+    draw_y_axis(f, cols[1], ymax);
 
     let bars: Vec<Bar> = (0..24)
         .map(|h| {
@@ -713,7 +730,7 @@ fn draw_hours(f: &mut Frame, area: Rect, hours: &[f64; 24]) {
         .collect();
     f.render_widget(
         BarChart::default().data(BarGroup::default().bars(&bars)).bar_width(3).bar_gap(0).max(ymax),
-        cols[1],
+        cols[0],
     );
 }
 
@@ -832,15 +849,15 @@ fn draw_burnup(
         Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(ACCENT)).data(&day),
         Dataset::default().marker(Marker::Block).graph_type(GraphType::Bar).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)).data(&chosen),
     ];
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(6)])
+        .split(rows[2]);
     let chart = Chart::new(datasets)
         .x_axis(Axis::default().style(dim()).bounds([0.0, 7.0]).labels(week_x_labels(start, a.today_date)))
-        .y_axis(
-            Axis::default()
-                .style(dim())
-                .bounds([0.0, 100.0])
-                .labels(vec![Line::from("0%"), Line::from("50%"), Line::from("100%")]),
-        );
-    f.render_widget(chart, rows[2]);
+        .y_axis(Axis::default().style(dim()).bounds([0.0, 100.0]).labels(Vec::<Line>::new()));
+    f.render_widget(chart, cols[0]);
+    draw_y_axis_right(f, cols[1], "100%", "50%", "0%");
 }
 
 /// Per-session breakdown: how utilization ramped across one 5-hour window.
@@ -862,15 +879,15 @@ fn draw_block_breakdown(f: &mut Frame, area: Rect, w: &FiveWindow) {
         .style(Style::default().fg(ACCENT))
         .data(&w.points)];
     let x_labels: Vec<Line> = ["0h", "1h", "2h", "3h", "4h", "5h"].iter().map(|s| Line::from(*s)).collect();
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(6)])
+        .split(rows[2]);
     let chart = Chart::new(datasets)
         .x_axis(Axis::default().style(dim()).bounds([0.0, 5.0]).labels(x_labels))
-        .y_axis(
-            Axis::default()
-                .style(dim())
-                .bounds([0.0, 100.0])
-                .labels(vec![Line::from("0%"), Line::from("50%"), Line::from("100%")]),
-        );
-    f.render_widget(chart, rows[2]);
+        .y_axis(Axis::default().style(dim()).bounds([0.0, 100.0]).labels(Vec::<Line>::new()));
+    f.render_widget(chart, cols[0]);
+    draw_y_axis_right(f, cols[1], "100%", "50%", "0%");
 }
 
 /// Day zoom: that day's 5-hour session windows as bars (full height = exhausted) with
@@ -920,15 +937,15 @@ fn draw_day_burnup(f: &mut Frame, area: Rect, a: &Analysis, date: NaiveDate) {
         .style(Style::default().fg(ACCENT))
         .data(&bars)];
     let x_labels: Vec<Line> = ["12a", "6a", "12p", "6p", "12a"].iter().map(|s| Line::from(*s)).collect();
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(6)])
+        .split(rows[2]);
     let chart = Chart::new(datasets)
         .x_axis(Axis::default().style(dim()).bounds([0.0, 24.0]).labels(x_labels))
-        .y_axis(
-            Axis::default()
-                .style(dim())
-                .bounds([0.0, 100.0])
-                .labels(vec![Line::from("0%"), Line::from("50%"), Line::from("100%")]),
-        );
-    f.render_widget(chart, rows[2]);
+        .y_axis(Axis::default().style(dim()).bounds([0.0, 100.0]).labels(Vec::<Line>::new()));
+    f.render_widget(chart, cols[0]);
+    draw_y_axis_right(f, cols[1], "100%", "50%", "0%");
 }
 
 fn draw_trends(f: &mut Frame, area: Rect, a: &Analysis) {
