@@ -8,6 +8,7 @@
 mod analysis;
 mod seed;
 mod store;
+mod tui;
 mod usage;
 mod view;
 
@@ -41,7 +42,7 @@ enum Cmd {
     },
     /// Render the pattern screens as text (for review; the same rows the TUI shows).
     Preview {
-        #[arg(long, default_value = "both")]
+        #[arg(long, default_value = "overview")]
         screen: String,
         #[arg(long, default_value = "paul-nhost")]
         account: String,
@@ -130,18 +131,21 @@ fn report(db: PathBuf, account: &str, plan: &str, weeks: usize) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db = cli.db.clone().unwrap_or_else(store::default_path);
-    match cli.cmd.unwrap_or(Cmd::Preview {
-        screen: "both".into(),
-        account: "paul-nhost".into(),
-        plan: "Team".into(),
-    }) {
+    let Some(cmd) = cli.cmd else {
+        // No subcommand: launch the interactive TUI.
+        let store = store::Store::open(&db)?;
+        return tui::run(store, cli.switcher, 8);
+    };
+    match cmd {
         Cmd::Snapshot => snapshot(&cli.switcher, db),
         Cmd::History { account, window, limit } => history(db, &account, &window, limit),
         Cmd::Preview { screen, account, plan } => preview(db, &screen, &account, &plan),
         Cmd::Report { account, plan, weeks } => report(db, &account, &plan, weeks),
         Cmd::Seed { account, days, reset } => {
             let mut s = store::Store::open(&db)?;
-            seed::run(&mut s, &account, days, reset)
+            let n = seed::run(&mut s, &account, days, reset)?;
+            println!("seeded {n} dummy samples for {account} over {days}d");
+            Ok(())
         }
     }
 }

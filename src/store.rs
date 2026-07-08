@@ -38,6 +38,18 @@ impl Store {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        Self::init(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// A throwaway in-memory store — used by the TUI's demo mode; nothing is persisted.
+    pub fn in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().context("opening in-memory db")?;
+        Self::init(&conn)?;
+        Ok(Self { conn })
+    }
+
+    fn init(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS snapshots (
                 id          INTEGER PRIMARY KEY,
@@ -49,7 +61,7 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_snap ON snapshots(account, window, taken_at);",
         )?;
-        Ok(Self { conn })
+        Ok(())
     }
 
     /// Record one row per present window across all accounts. Returns rows written.
@@ -119,6 +131,19 @@ impl Store {
              WHERE account = ?1 AND window = ?2 ORDER BY taken_at DESC LIMIT ?3",
             account, window, limit as i64,
         )
+    }
+
+    /// Distinct account names that have samples, alphabetical — the rows the TUI lists.
+    pub fn accounts(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT account FROM snapshots ORDER BY account")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// All samples for an account+window, oldest first (for analysis).

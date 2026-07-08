@@ -2,7 +2,7 @@
 //! weekly used/free, day-of-week rhythm, weekday vs weekend, monthly trend, burn series.
 
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Timelike, Utc};
 use std::collections::BTreeMap;
 
 use crate::store::Store;
@@ -11,6 +11,32 @@ pub struct WeeklyUsage {
     #[allow(dead_code)] // week-ending date, for the planned weekly-detail view
     pub label: String,
     pub used: f64,     // peak 7-day utilization reached that week (free = 100 - used)
+}
+
+/// One 5-hour session window (grouped by its reset): span, peak utilization (100% =
+/// fully exhausted), and the intra-window utilization trace `(hours-since-start, %)`.
+pub struct FiveWindow {
+    pub start: DateTime<Local>,
+    pub end: DateTime<Local>,
+    pub peak: f64,
+    pub points: Vec<(f64, f64)>,
+}
+
+/// One calendar day, assembled for display.
+pub struct DayView {
+    pub date: NaiveDate,
+    /// Weekly-allotment % consumed per hour of the day (0..24) — backs the burn-up line.
+    pub alloc_hours: [f64; 24],
+    /// Weekly-allotment % consumed per 6-hour block (derived from `alloc_hours`).
+    pub blocks: [f64; 4],
+    /// Total weekly-allotment % consumed that day (sum of `alloc_hours`).
+    pub total: f64,
+    /// Activity per hour of the day (0..24), from the 5-hour window — "when burned".
+    pub hours: [f64; 24],
+    /// Peak 5-hour window utilization reached that day.
+    pub peak_5h: f64,
+    pub is_today: bool,
+    pub is_future: bool,
 }
 
 pub struct Analysis {
@@ -29,10 +55,52 @@ pub struct Analysis {
     pub weekend_avg: f64,
     /// (month label, avg weekly used) oldest→newest.
     pub months: Vec<(String, f64)>,
-    /// Avg consumption *rate* by weekday(Mon..Sun) x 3-hour bucket(0..8) — the
-    /// "when do you actually burn tokens" heatmap. Normalized against `heat_max`.
-    pub heat: [[f64; 8]; 7],
-    pub heat_max: f64,
+    /// Today's consumption by 3-hour bucket (local time), summed per bucket — the
+    /// "when did I burn tokens today" row. Shade relative to `today_max`.
+    pub today: [f64; 8],
+    pub today_max: f64,
+    /// "Now" (local date) — the boundary the week view will not scroll past.
+    pub today_date: NaiveDate,
+    /// Weekly-allotment consumption per hour, keyed by local date.
+    day_alloc_hours: BTreeMap<NaiveDate, [f64; 24]>,
+    /// Hourly activity (5-hour window), keyed by local date.
+    day_hours: BTreeMap<NaiveDate, [f64; 24]>,
+    /// Peak 5-hour utilization, keyed by local date.
+    peak_5h: BTreeMap<NaiveDate, f64>,
+    /// Every 5-hour session window, chronological — the overlay bars + breakdowns.
+    pub five_windows: Vec<FiveWindow>,
+}
+
+impl Analysis {
+    /// Sunday of the current calendar week.
+    pub fn current_week_start(&self) -> NaiveDate {
+        self.today_date - Duration::days(self.today_date.weekday().num_days_from_sunday() as i64)
+    }
+
+    /// Assemble one day for display (hourly consumption clamped ≥ 0; 6-hour blocks and
+    /// the day total derived from it).
+    pub fn day_view(&self, date: NaiveDate) -> DayView {
+        let alloc_hours = self.day_alloc_hours.get(&date).copied().unwrap_or([0.0; 24]).map(|v| v.max(0.0));
+        let mut blocks = [0.0f64; 4];
+        for (h, v) in alloc_hours.iter().enumerate() {
+            blocks[h / 6] += v;
+        }
+        DayView {
+            date,
+            alloc_hours,
+            blocks,
+            total: alloc_hours.iter().sum(),
+            hours: self.day_hours.get(&date).copied().unwrap_or([0.0; 24]),
+            peak_5h: self.peak_5h.get(&date).copied().unwrap_or(0.0),
+            is_today: date == self.today_date,
+            is_future: date > self.today_date,
+        }
+    }
+
+    /// The seven days (Sun..Sat) starting at `start`.
+    pub fn week_view(&self, start: NaiveDate) -> Vec<DayView> {
+        (0..7).map(|i| self.day_view(start + Duration::days(i))).collect()
+    }
 }
 
 fn pace(used: f64, remaining_min: i64) -> Option<f64> {
@@ -138,32 +206,62 @@ pub fn build(store: &Store, account: &str, plan: &str, weeks_n: usize) -> Result
     let weekday_avg = avg(0, 5);
     let weekend_avg = avg(5, 7);
 
-    // Heatmap: consumption rate = positive delta in 5-hour utilization between
-    // consecutive samples of the *same* window (a reset drop is skipped), attributed
-    // to the later sample's weekday + 3-hour bucket. Averaged per interval.
-    let mut hsum = [[0.0f64; 8]; 7];
-    let mut hcnt = [[0u32; 8]; 7];
+    // Activity per hour per local day: positive deltas in 5-hour utilization between
+    // consecutive same-window samples (reset drops skipped) — "when tokens were burned".
+    // Feeds the hourly day-detail chart; today's row folds up for the text preview.
+    let today_date = Local::now().date_naive();
+    let mut day_hours: BTreeMap<NaiveDate, [f64; 24]> = BTreeMap::new();
     for w in five.windows(2) {
         let (p, c) = (&w[0], &w[1]);
         if p.resets_at != c.resets_at || c.resets_at.is_none() {
             continue;
         }
-        let d = (c.utilization - p.utilization).max(0.0);
         let l = c.taken_at.with_timezone(&Local);
-        let wd = l.weekday().num_days_from_monday() as usize;
-        let bk = (l.hour() / 3) as usize;
-        hsum[wd][bk] += d;
-        hcnt[wd][bk] += 1;
+        day_hours.entry(l.date_naive()).or_insert([0.0; 24])[l.hour() as usize] +=
+            (c.utilization - p.utilization).max(0.0);
     }
-    let mut heat = [[0.0f64; 8]; 7];
-    let mut heat_max = 0.0f64;
-    for wd in 0..7 {
-        for bk in 0..8 {
-            if hcnt[wd][bk] > 0 {
-                heat[wd][bk] = hsum[wd][bk] / hcnt[wd][bk] as f64;
-                heat_max = heat_max.max(heat[wd][bk]);
-            }
+    // 5-hour session windows: group five-hour samples by their reset, keep the peak and
+    // the intra-window utilization trace (for the overlay bars + per-session breakdown).
+    // (resetsAt, peak, [(hours-since-start, utilization)]) keyed by reset timestamp.
+    type FiveAccum = (DateTime<Utc>, f64, Vec<(f64, f64)>);
+    let mut fw: BTreeMap<i64, FiveAccum> = BTreeMap::new();
+    for s in &five {
+        if let Some(r) = s.resets_at {
+            let start_utc = r - Duration::hours(5);
+            let e = fw.entry(r.timestamp()).or_insert((r, 0.0, Vec::new()));
+            e.1 = e.1.max(s.utilization);
+            e.2.push(((s.taken_at - start_utc).num_seconds() as f64 / 3600.0, s.utilization));
         }
+    }
+    let five_windows: Vec<FiveWindow> = fw
+        .into_values()
+        .map(|(r, peak, mut points)| {
+            points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let end = r.with_timezone(&Local);
+            FiveWindow { start: end - Duration::hours(5), end, peak, points }
+        })
+        .collect();
+
+    let mut today = [0.0f64; 8];
+    if let Some(hrs) = day_hours.get(&today_date) {
+        for (h, v) in hrs.iter().enumerate() {
+            today[h / 3] += v;
+        }
+    }
+    let today_max = today.iter().cloned().fold(0.0f64, f64::max);
+
+    // Weekly-allotment consumption per hour per local day: the *net* change in the 7-day
+    // window's utilization across consecutive same-window samples (reset drops skipped).
+    // Net (not per-sample positives) so sampling jitter cancels within the hour.
+    let mut day_alloc_hours: BTreeMap<NaiveDate, [f64; 24]> = BTreeMap::new();
+    for w in seven.windows(2) {
+        let (p, c) = (&w[0], &w[1]);
+        if p.resets_at != c.resets_at || c.resets_at.is_none() {
+            continue;
+        }
+        let l = c.taken_at.with_timezone(&Local);
+        day_alloc_hours.entry(l.date_naive()).or_insert([0.0; 24])[l.hour() as usize] +=
+            c.utilization - p.utilization;
     }
 
     Ok(Analysis {
@@ -178,7 +276,12 @@ pub fn build(store: &Store, account: &str, plan: &str, weeks_n: usize) -> Result
         weekday_avg,
         weekend_avg,
         months,
-        heat,
-        heat_max,
+        today,
+        today_max,
+        today_date,
+        day_alloc_hours,
+        day_hours,
+        peak_5h: daily,
+        five_windows,
     })
 }

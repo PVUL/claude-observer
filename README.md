@@ -6,11 +6,11 @@ into **trends and patterns** — how much of each 7-day allotment you actually u
 on the table, when your windows are typically under-utilized, burn-rate over time, per-
 account comparison.
 
-**Scope, deliberately narrow:** this is *not* a live dashboard.
-[claude-switcher](https://github.com/PVUL/claude-switcher)'s TUI already nails the
-point-in-time view; claude-observer is the separate **history + analytics** tool that
-sits alongside it (may merge later). It reuses claude-switcher's `usage --json` as its
-data feed.
+**Scope, deliberately narrow:** this is *not* the live point-in-time gauge.
+[claude-switcher](https://github.com/PVUL/claude-switcher)'s TUI already nails that;
+claude-observer is the separate **history + analytics** tool that sits alongside it (may
+merge later). It has its own interactive TUI, but for *exploring recorded patterns* —
+not a real-time meter. It reuses claude-switcher's `usage --json` as its data feed.
 
 ## Why
 
@@ -23,6 +23,21 @@ over time, helps **plan work** to fill under-utilized capacity.
 
 The collection + inspection primitives are in place:
 
+- **`claude-observer`** (no subcommand) — the interactive TUI. The **Week** view is a
+  **burn-up line**: cumulative allotment used across the week, rising toward 100% (flat
+  where there was no usage), with the week's **5-hour session windows overlaid as bars**
+  (full height = fully exhausted). Keys:
+  - `←`/`→` — select the day (at the edges, scroll to the previous/next week; never the
+    future).
+  - `↑`/`↓` — cycle the 5-hour session blocks (each drawn as a box the width of its
+    hours); the selected one is highlighted.
+  - `enter` — **zoom**: on a selected session → its intra-session breakdown; otherwise →
+    the day's sessions + burn-up. `esc` backs out a level at a time.
+  - `t` — jump back to today. `g` — switch between the burn-up line and the **bar
+    calendar** (per-day 6-hour blocks).
+  - `tab` — cycle accounts (shown in the panel title). `s` snapshot, `d` toggle a
+    **demo** preview account (dummy data, no snapshots needed), `q` quit.
+  - (A Trends view — weekly / day-of-week / monthly bar charts — is built but parked.)
 - **`claude-observer snapshot`** — record current window utilization into a local SQLite
   time-series (`$XDG_DATA_HOME/claude-observer/observer.db`). Runs on a timer — this is
   the tool's heartbeat; everything else analyzes what it collects.
@@ -78,11 +93,13 @@ No real data yet? Seed dummy samples and look at the screens — this path needs
 
 ```sh
 claude-observer seed --account paul-nhost --reset   # ~35 days of fake samples
-claude-observer preview                             # render Overview + Trends
+claude-observer                                     # interactive TUI (default)
+claude-observer preview                             # static text render (for review)
 claude-observer report                              # plain-text summary
 ```
 
-(Running with no subcommand is the same as `preview`.)
+Running with no subcommand launches the interactive TUI; `preview` renders the same
+panels as plain framed text (`--screen overview|trends|both`) for scripts and review.
 
 For **real** data you need [claude-switcher](https://github.com/PVUL/claude-switcher)
 on your `PATH` — `snapshot` shells out to `claude-switcher usage --json` to read your

@@ -30,7 +30,8 @@ fn intensity(t: DateTime<Utc>) -> f64 {
     base * (0.20 + 0.80 * tod)
 }
 
-pub fn run(store: &mut Store, account: &str, days: i64, reset: bool) -> Result<()> {
+/// Seed `days` of dummy samples for `account`; returns the number of rows written.
+pub fn run(store: &mut Store, account: &str, days: i64, reset: bool) -> Result<usize> {
     if reset {
         store.clear(account)?;
     }
@@ -64,6 +65,5 @@ pub fn run(store: &mut Store, account: &str, days: i64, reset: bool) -> Result<(
     }
     let n = rows.len();
     store.insert_many(&rows)?;
-    println!("seeded {n} dummy samples for {account} over {days}d");
-    Ok(())
+    Ok(n)
 }

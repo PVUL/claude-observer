@@ -1,9 +1,9 @@
-//! Text rendering of the pattern-explorer screens — trend sparklines + a 24-hour
-//! heatmap (more informative than flat %-bars). Kept as plain framed text so the exact
-//! look can be previewed/approved without a TTY; the interactive nav shell reuses these.
+//! Text rendering of the pattern-explorer screens — trend sparklines + today's hourly
+//! consumption row. Kept as plain framed text so the exact look can be previewed/approved
+//! without a TTY; the interactive nav shell reuses these.
 
 use crate::analysis::Analysis;
-use chrono::Local;
+use chrono::{Local, Timelike};
 
 const W: usize = 74; // inner content width (between "│ " and " │")
 
@@ -74,9 +74,11 @@ fn weekly(a: &Analysis) -> (String, String, f64) {
     (nums.join(" "), sp, avg)
 }
 
-fn heatmap_lines(a: &Analysis) -> Vec<String> {
+fn today_lines(a: &Analysis) -> Vec<String> {
+    let now = Local::now();
+    let wd = now.format("%a").to_string();
     let mut b = vec![
-        "USAGE BY HOUR  (when tokens are actually consumed · local time)".to_string(),
+        "TODAY  (when you burned tokens · local time)".to_string(),
         format!(
             "        {}",
             ["12a", "3a", "6a", "9a", "12p", "3p", "6p", "9p"]
@@ -85,11 +87,11 @@ fn heatmap_lines(a: &Analysis) -> Vec<String> {
                 .collect::<String>()
         ),
     ];
-    for (i, d) in DAYS.iter().enumerate() {
-        let cells: String = (0..8).map(|bk| format!("{:<4}", shade(a.heat[i][bk], a.heat_max))).collect();
-        b.push(format!("  {}   {}", d, cells));
-    }
-    b.push("  low ▁▂▃▄▅▆▇█ high".to_string());
+    let cells: String = (0..8).map(|bk| format!("{:<4}", shade(a.today[bk], a.today_max))).collect();
+    b.push(format!("  {}   {}", wd, cells));
+    // caret under the current 3-hour bucket
+    let cur = (now.hour() / 3) as usize;
+    b.push(format!("{}▲ now", " ".repeat(8 + cur * 4)));
     b
 }
 
@@ -114,7 +116,7 @@ pub fn overview(a: &Analysis) -> Vec<String> {
     let burn = &a.burn[a.burn.len().saturating_sub(48)..];
     b.push(format!("  burn (7d)  {}  now {:.0}%", spark(burn), used));
     b.push(String::new());
-    b.extend(heatmap_lines(a));
+    b.extend(today_lines(a));
     b.push(String::new());
     b.push(format!("▏ ~{:.0}% of your weekly allotment is typically free.", (100.0 - avg).max(0.0)));
     b
@@ -151,7 +153,7 @@ pub fn trends(a: &Analysis) -> Vec<String> {
 
 pub fn render(a: &Analysis, tab: &str) -> String {
     let right = format!("{} · {}", a.account, a.plan);
-    let footer = "q quit · tab panels · ←/→ weeks · s snapshot now";
+    let footer = "static preview · run `claude-observer` for the interactive TUI";
     let (tabs, body) = match tab {
         "trends" => ("Overview  [Trends]", trends(a)),
         _ => ("[Overview]  Trends", overview(a)),
