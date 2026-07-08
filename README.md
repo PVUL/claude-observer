@@ -23,17 +23,16 @@ over time, helps **plan work** to fill under-utilized capacity.
 
 The collection + inspection primitives are in place:
 
-- **`claude-observer`** (no subcommand) — the interactive TUI. The **Week** view is a
-  **burn-up line**: cumulative allotment used across the week, rising toward 100% (flat
-  where there was no usage), with the week's **5-hour session windows overlaid as bars**
-  (full height = fully exhausted). Keys:
+- **`claude-observer`** (no subcommand) — the interactive TUI. The **Week** view is the
+  week's **5-hour session windows as floating bars** — taller = more of that window used
+  (full height = fully exhausted; a short floor = idle). The % scale is on the right;
+  future days in the current week are greyed. Keys:
   - `←`/`→` — select the day (at the edges, scroll to the previous/next week; never the
     future).
-  - `↑`/`↓` — cycle the 5-hour session blocks (each drawn as a box the width of its
-    hours); the selected one is highlighted.
+  - `↑`/`↓` — cycle the 5-hour session blocks; the selected one is highlighted.
   - `enter` — **zoom**: on a selected session → its intra-session breakdown; otherwise →
-    the day's sessions + burn-up. `esc` backs out a level at a time.
-  - `t` — jump back to today. `g` — switch between the burn-up line and the **bar
+    the day's sessions. `esc` backs out a level at a time.
+  - `t` — jump back to today. `g` — switch between the **sessions** bars and the **bar
     calendar** (per-day 6-hour blocks).
   - `tab` — cycle accounts (shown in the panel title). `s` snapshot, `d` toggle a
     **demo** preview account (dummy data, no snapshots needed), `q` quit.
